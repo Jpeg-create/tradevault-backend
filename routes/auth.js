@@ -1,7 +1,8 @@
-const express  = require('express');
-const router   = express.Router();
-const bcrypt   = require('bcryptjs');
-const jwt      = require('jsonwebtoken');
+const express    = require('express');
+const router     = express.Router();
+const bcrypt     = require('bcryptjs');
+const jwt        = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
 const { v4: uuidv4 } = require('uuid');
 const { OAuth2Client } = require('google-auth-library');
 const { dbGet, dbRun } = require('../db/database');
@@ -10,7 +11,65 @@ const { generateToken } = require('../middleware/auth');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const JWT_SECRET   = process.env.JWT_SECRET || 'tradevault-secret-change-in-production';
 
-// ── HELPERS ───────────────────────────────────────────────
+// ── EMAIL SETUP ───────────────────────────────────────────
+// Configure these in Render Environment Variables:
+//   SMTP_HOST     e.g. smtp.gmail.com
+//   SMTP_PORT     e.g. 587
+//   SMTP_USER     your Gmail address
+//   SMTP_PASS     your Gmail App Password (not your real password)
+//   SMTP_FROM     e.g. TradeVault <you@gmail.com>
+
+function createMailer() {
+  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return null;
+  return nodemailer.createTransport({
+    host:   process.env.SMTP_HOST || 'smtp.gmail.com',
+    port:   parseInt(process.env.SMTP_PORT || '587'),
+    secure: false,
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+  });
+}
+
+async function sendResetEmail(toEmail, toName, resetToken) {
+  const mailer = createMailer();
+  const frontendUrl = process.env.FRONTEND_URL || 'https://tradevault-frontend.vercel.app';
+  const resetLink   = `${frontendUrl}/auth.html?reset=${resetToken}`;
+
+  if (!mailer) {
+    // No SMTP configured — return token so dev can still test
+    console.log(`[DEV] Reset token for ${toEmail}: ${resetToken}`);
+    return { devToken: resetToken };
+  }
+
+  await mailer.sendMail({
+    from:    process.env.SMTP_FROM || `TradeVault <${process.env.SMTP_USER}>`,
+    to:      `${toName} <${toEmail}>`,
+    subject: 'Reset your TradeVault password',
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#0a0e14;color:#e8ecf1;border-radius:12px">
+        <h1 style="font-size:24px;margin-bottom:8px;color:#00ff88">TradeVault</h1>
+        <p style="color:#8a94a6;margin-bottom:24px">Password Reset Request</p>
+        <p>Hi ${toName},</p>
+        <p>Someone requested a password reset for your account. Click the button below to set a new password. This link expires in <strong>15 minutes</strong>.</p>
+        <div style="text-align:center;margin:32px 0">
+          <a href="${resetLink}"
+             style="background:#00ff88;color:#0a0e14;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block">
+            Reset Password
+          </a>
+        </div>
+        <p style="font-size:13px;color:#8a94a6">Or paste this link in your browser:<br>
+          <a href="${resetLink}" style="color:#3498ff;word-break:break-all">${resetLink}</a>
+        </p>
+        <hr style="border:none;border-top:1px solid #2a3140;margin:24px 0">
+        <p style="font-size:12px;color:#8a94a6">If you didn't request this, you can safely ignore this email. Your password won't change.</p>
+      </div>`,
+  });
+  return { sent: true };
+}
+
+// ── HELPER ────────────────────────────────────────────────
 function authUser(req) {
   const h = req.headers.authorization;
   if (!h) throw new Error('Not authenticated');
@@ -114,25 +173,25 @@ router.post('/reset-password-request', async (req, res) => {
     if (!email) return res.status(400).json({ success: false, error: 'Email is required' });
 
     const user = dbGet('SELECT id, name FROM users WHERE email = ?', [email.toLowerCase()]);
-    // Always return success to prevent email enumeration
+    // Always return 200 to prevent email enumeration
     if (!user) return res.json({ success: true, message: 'If that email exists, a reset link has been sent.' });
 
-    const resetToken = jwt.sign(
-      { id: user.id, purpose: 'reset' },
-      JWT_SECRET,
-      { expiresIn: '15m' }
-    );
+    const resetToken = jwt.sign({ id: user.id, purpose: 'reset' }, JWT_SECRET, { expiresIn: '15m' });
+    const result     = await sendResetEmail(email.toLowerCase(), user.name, resetToken);
 
-    // In production: send email with reset link containing this token
-    // For now (no email service configured): return token directly in dev mode
-    res.json({
-      success: true,
-      message: 'Reset token generated.',
-      resetToken,
-      dev_note: 'No email service is configured yet. Copy the resetToken above and paste it into the Reset Password form.'
-    });
+    if (result.devToken) {
+      // No email configured — return token so user can still reset
+      return res.json({
+        success: true,
+        message: 'No email service configured. Copy the token below and paste it in the Reset Password form.',
+        devToken: result.devToken,
+      });
+    }
+
+    res.json({ success: true, message: 'Password reset email sent! Check your inbox (and spam folder).' });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error('Reset email error:', err.message);
+    res.status(500).json({ success: false, error: 'Failed to send reset email: ' + err.message });
   }
 });
 
@@ -141,28 +200,26 @@ router.post('/reset-password', async (req, res) => {
   try {
     const { token, newPassword } = req.body;
     if (!token || !newPassword)
-      return res.status(400).json({ success: false, error: 'Token and new password required' });
+      return res.status(400).json({ success: false, error: 'Token and new password are required' });
     if (newPassword.length < 6)
       return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
 
     let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch {
-      return res.status(400).json({ success: false, error: 'Reset link is invalid or has expired (15 min limit)' });
-    }
+    try { decoded = jwt.verify(token, JWT_SECRET); }
+    catch { return res.status(400).json({ success: false, error: 'Reset link is invalid or has expired (15 min limit)' }); }
+
     if (decoded.purpose !== 'reset')
       return res.status(400).json({ success: false, error: 'Invalid reset token' });
 
     const hashed = await bcrypt.hash(newPassword, 12);
     dbRun('UPDATE users SET password = ? WHERE id = ?', [hashed, decoded.id]);
-    res.json({ success: true, message: 'Password updated successfully. Please log in.' });
+    res.json({ success: true, message: 'Password updated! You can now log in.' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ── PUT /api/auth/profile — update name or password ──────
+// ── PUT /api/auth/profile ─────────────────────────────────
 router.put('/profile', async (req, res) => {
   try {
     const decoded = authUser(req);
@@ -173,12 +230,11 @@ router.put('/profile', async (req, res) => {
     if (name && name.trim()) {
       dbRun('UPDATE users SET name = ? WHERE id = ?', [name.trim(), decoded.id]);
     }
-
     if (newPassword) {
       if (!currentPassword)
         return res.status(400).json({ success: false, error: 'Current password required' });
       if (!user.password)
-        return res.status(400).json({ success: false, error: 'Google accounts cannot set a password here' });
+        return res.status(400).json({ success: false, error: 'Google accounts cannot change password here' });
       const valid = await bcrypt.compare(currentPassword, user.password);
       if (!valid)
         return res.status(400).json({ success: false, error: 'Current password is incorrect' });
@@ -215,10 +271,10 @@ router.delete('/account', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Incorrect password' });
     }
 
-    dbRun('DELETE FROM trades           WHERE user_id = ?', [decoded.id]);
-    dbRun('DELETE FROM journal_entries  WHERE user_id = ?', [decoded.id]);
-    dbRun('DELETE FROM broker_connections WHERE user_id = ?', [decoded.id]);
-    dbRun('DELETE FROM users            WHERE id = ?',      [decoded.id]);
+    dbRun('DELETE FROM trades              WHERE user_id = ?', [decoded.id]);
+    dbRun('DELETE FROM journal_entries     WHERE user_id = ?', [decoded.id]);
+    dbRun('DELETE FROM broker_connections  WHERE user_id = ?', [decoded.id]);
+    dbRun('DELETE FROM users               WHERE id = ?',      [decoded.id]);
     res.json({ success: true, message: 'Account deleted' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

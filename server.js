@@ -1,30 +1,20 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
-
-const tradesRouter  = require('./routes/trades');
-const journalRouter = require('./routes/journal');
-const importRouter  = require('./routes/import');
-const brokersRouter = require('./routes/brokers');
-const errorHandler  = require('./middleware/errorHandler');
+const { initDB } = require('./db/database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ── CORS ─────────────────────────────────────────────────
-// This is what lets your Vercel frontend talk to this Render backend.
-// Without this, browsers block cross-origin requests for security.
 const allowedOrigins = [
-  process.env.FRONTEND_URL,          // your Vercel URL from .env
-  'http://localhost:5500',           // VS Code Live Server
-  'http://localhost:3000',           // local backend serving frontend
+  process.env.FRONTEND_URL,
+  'http://localhost:5500',
+  'http://localhost:3000',
   'http://127.0.0.1:5500',
-].filter(Boolean); // removes undefined/empty values
+].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (Postman, curl, mobile apps)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
     callback(new Error(`CORS: origin ${origin} not allowed`));
@@ -34,34 +24,30 @@ app.use(cors({
   credentials: true
 }));
 
-// ── BODY PARSING ─────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// ── API ROUTES ───────────────────────────────────────────
-app.use('/api/trades',  tradesRouter);
-app.use('/api/journal', journalRouter);
-app.use('/api/import',  importRouter);
-app.use('/api/brokers', brokersRouter);
+app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+app.get('/', (req, res) => res.json({ message: 'TradeVault API is running.' }));
 
-// ── HEALTH CHECK ─────────────────────────────────────────
-// Render pings this to confirm the server is alive
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+// Boot: init DB first, then load routes, then start server
+async function start() {
+  await initDB();
 
-// ── ROOT ─────────────────────────────────────────────────
-app.get('/', (req, res) => {
-  res.json({ message: 'TradeVault API is running. Frontend is on Vercel.' });
-});
+  app.use('/api/trades',  require('./routes/trades'));
+  app.use('/api/journal', require('./routes/journal'));
+  app.use('/api/import',  require('./routes/import'));
+  app.use('/api/brokers', require('./routes/brokers'));
 
-// ── ERROR HANDLER (must be last) ─────────────────────────
-app.use(errorHandler);
+  app.use((err, req, res, next) => {
+    console.error(`[ERROR] ${req.method} ${req.path}:`, err.message);
+    res.status(err.status || 500).json({ success: false, error: err.message || 'Internal server error' });
+  });
 
-app.listen(PORT, () => {
-  console.log(`\n🚀 TradeVault API running on http://localhost:${PORT}`);
-  console.log(`🌐 Allowed frontend origin: ${process.env.FRONTEND_URL || 'not set'}`);
-  console.log(`❤️  Health check: http://localhost:${PORT}/api/health\n`);
-});
+  app.listen(PORT, () => {
+    console.log(`\n🚀 TradeVault API running on http://localhost:${PORT}`);
+    console.log(`❤️  Health: http://localhost:${PORT}/api/health\n`);
+  });
+}
 
-module.exports = app;
+start().catch(err => { console.error('Failed to start:', err); process.exit(1); });

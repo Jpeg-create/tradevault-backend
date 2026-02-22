@@ -95,7 +95,9 @@ function dbAll(query, params = []) {
 
 function dbRun(query, params = []) {
   db.run(query, params);
+  const rowsModified = typeof db.getRowsModified === 'function' ? db.getRowsModified() : 0;
   db.save();
+  return rowsModified;
 }
 
 function dbGet(query, params = []) {

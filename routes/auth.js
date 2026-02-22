@@ -87,7 +87,7 @@ async function sendResetEmail(toEmail, toName, resetToken) {
 // ── HELPER ────────────────────────────────────────────────
 function authUser(req) {
   const h = req.headers.authorization;
-  if (!h) throw new Error('Not authenticated');
+  if (!h || !h.startsWith('Bearer ')) throw new Error('Not authenticated');
   return jwt.verify(h.split(' ')[1], JWT_SECRET);
 }
 

@@ -3,6 +3,7 @@ const express = require('express');
 const cors    = require('cors');
 const rateLimit = require('express-rate-limit');
 const { initDB } = require('./db/database');
+const errorHandler = require('./middleware/errorHandler');
 
 // ── GUARD: crash loudly in production if secret is still default ──
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
@@ -72,15 +73,7 @@ async function start() {
   app.use('/api/import',  require('./routes/import'));
   app.use('/api/brokers', require('./routes/brokers'));
 
-  // Global error handler — never expose raw stack traces
-  app.use((err, req, res, next) => {
-    console.error(`[ERROR] ${req.method} ${req.path}:`, err.message);
-    const isDev = process.env.NODE_ENV !== 'production';
-    res.status(err.status || 500).json({
-      success: false,
-      error: isDev ? err.message : 'An internal server error occurred.',
-    });
-  });
+  app.use(errorHandler);
 
   app.listen(PORT, () => {
     console.log(`\n🚀 TradeVault API running on http://localhost:${PORT}`);

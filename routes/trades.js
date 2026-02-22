@@ -81,12 +81,14 @@ router.post('/bulk', (req, res) => {
       return res.status(400).json({ success: false, error: 'trades array required' });
     if (trades.length > 500)
       return res.status(400).json({ success: false, error: 'Bulk import is limited to 500 trades per request' });
+    let inserted = 0;
     trades.forEach(t => {
       const pnl = t.pnl!=null ? t.pnl : (parseFloat(t.exit_price)-parseFloat(t.entry_price))*parseFloat(t.quantity)*(t.direction==='short'?-1:1)-parseFloat(t.commission||0);
-      dbRun(`INSERT OR IGNORE INTO trades (id,user_id,symbol,asset_type,direction,entry_price,exit_price,quantity,entry_date,exit_date,stop_loss,take_profit,strategy,notes,commission,market_conditions,pnl,broker,broker_trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      const changes = dbRun(`INSERT OR IGNORE INTO trades (id,user_id,symbol,asset_type,direction,entry_price,exit_price,quantity,entry_date,exit_date,stop_loss,take_profit,strategy,notes,commission,market_conditions,pnl,broker,broker_trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [t.id||uuidv4(),req.user.id,(t.symbol||'').toUpperCase(),t.asset_type||'stock',t.direction||'long',t.entry_price,t.exit_price,t.quantity,t.entry_date||null,t.exit_date||null,t.stop_loss||null,t.take_profit||null,t.strategy||null,t.notes||null,t.commission||0,t.market_conditions||null,parseFloat(parseFloat(pnl).toFixed(8)),t.broker||'manual',t.broker_trade_id||null]);
+      if (changes > 0) inserted += 1;
     });
-    res.status(201).json({ success: true, inserted: trades.length });
+    res.status(201).json({ success: true, inserted });
   } catch (err) { res.status(500).json({ success: false, error: process.env.NODE_ENV !== 'production' ? err.message : 'Server error' }); }
 });
 

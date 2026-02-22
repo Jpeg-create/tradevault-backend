@@ -2,7 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const multer  = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const { dbRun } = require('../db/database');
+const { dbRun, dbGet } = require('../db/database');
 const { requireAuth } = require('../middleware/auth');
 const path = require('path');
 const fs   = require('fs');
@@ -19,8 +19,11 @@ const upload = multer({
   dest: uploadDir,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
   fileFilter: (req, file, cb) => {
-    if (!file.originalname.toLowerCase().endsWith('.csv'))
-      return cb(new Error('Only CSV files are allowed'));
+    if (!file.originalname.toLowerCase().endsWith('.csv')) {
+      const err = new Error('Only CSV files are allowed');
+      err.status = 400;
+      return cb(err);
+    }
     cb(null, true);
   },
 });
@@ -126,21 +129,43 @@ router.post('/confirm', (req, res) => {
     if (!validRows.length)
       return res.status(400).json({ success: false, error: 'No valid rows to import' });
 
+    let imported = 0;
     validRows.forEach(t => {
       const sym = String(t.symbol || '').toUpperCase().slice(0, 20);
       if (!sym) return;
+      const direction = t.direction || 'long';
+      const entryPrice = parseFloat(t.entry_price) || 0;
+      const exitPrice = parseFloat(t.exit_price) || 0;
+      const quantity = parseFloat(t.quantity) || 0;
+      const entryDate = t.entry_date || null;
+      const exitDate = t.exit_date || null;
+      const existing = dbGet(
+        `SELECT id FROM trades
+         WHERE user_id = ?
+           AND broker = 'csv_import'
+           AND symbol = ?
+           AND direction = ?
+           AND entry_price = ?
+           AND exit_price = ?
+           AND quantity = ?
+           AND COALESCE(entry_date, '') = COALESCE(?, '')
+           AND COALESCE(exit_date, '') = COALESCE(?, '')
+         LIMIT 1`,
+        [req.user.id, sym, direction, entryPrice, exitPrice, quantity, entryDate, exitDate]
+      );
+      if (existing) return;
+
       const pnl = parseFloat(t.pnl) || 0;
-      dbRun(
+      const changes = dbRun(
         `INSERT OR IGNORE INTO trades
           (id,user_id,symbol,asset_type,direction,entry_price,exit_price,quantity,
            entry_date,exit_date,stop_loss,take_profit,strategy,notes,commission,
            market_conditions,pnl,broker)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [uuidv4(), req.user.id, sym,
-         t.asset_type || 'stock', t.direction || 'long',
-         parseFloat(t.entry_price) || 0, parseFloat(t.exit_price) || 0,
-         parseFloat(t.quantity)    || 0,
-         t.entry_date || null, t.exit_date || null,
+         t.asset_type || 'stock', direction,
+         entryPrice, exitPrice, quantity,
+         entryDate, exitDate,
          parseFloat(t.stop_loss)   || null, parseFloat(t.take_profit) || null,
          t.strategy    ? String(t.strategy).slice(0, 200)  : null,
          t.notes       ? String(t.notes).slice(0, 5000)    : null,
@@ -148,8 +173,9 @@ router.post('/confirm', (req, res) => {
          t.market_conditions ? String(t.market_conditions).slice(0, 500) : null,
          parseFloat(pnl.toFixed(8)), 'csv_import']
       );
+      if (changes > 0) imported += 1;
     });
-    res.json({ success: true, imported: validRows.length });
+    res.json({ success: true, imported });
   } catch (err) { res.status(500).json({ success: false, error: safeErr(err) }); }
 });
 

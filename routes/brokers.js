@@ -42,13 +42,37 @@ router.post('/:id/sync', async (req, res) => {
     const conn = dbGet('SELECT * FROM broker_connections WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!conn) return res.status(404).json({ success: false, error: 'Broker not found' });
     const rawTrades = await fetchTradesFromBroker(conn.broker_name, { api_key: conn.api_key, api_secret: conn.api_secret, account_id: conn.account_id, paper: req.body.paper||false });
+    let imported = 0;
     rawTrades.forEach(t => {
-      const pnl = t.pnl || ((t.exit_price-t.entry_price)*t.quantity*(t.direction==='short'?-1:1)-(t.commission||0));
-      dbRun(`INSERT OR IGNORE INTO trades (id,user_id,symbol,asset_type,direction,entry_price,exit_price,quantity,entry_date,exit_date,commission,broker,broker_trade_id,strategy,notes,pnl) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [uuidv4(),req.user.id,t.symbol,t.asset_type,t.direction,t.entry_price,t.exit_price,t.quantity,t.entry_date,t.exit_date,t.commission||0,t.broker,t.broker_trade_id,t.strategy||null,t.notes||null,parseFloat(pnl.toFixed(8))]);
+      const broker = t.broker || conn.broker_name;
+      const brokerTradeId = t.broker_trade_id ? String(t.broker_trade_id) : null;
+      const symbol = String(t.symbol || '').toUpperCase().slice(0, 20);
+      if (!symbol) return;
+
+      const direction = t.direction === 'short' ? 'short' : 'long';
+      const entryPrice = parseFloat(t.entry_price);
+      const exitPrice = parseFloat(t.exit_price);
+      const quantity = parseFloat(t.quantity);
+      if (isNaN(entryPrice) || isNaN(exitPrice) || isNaN(quantity) || quantity <= 0) return;
+      const commission = parseFloat(t.commission) || 0;
+
+      if (brokerTradeId) {
+        const exists = dbGet(
+          'SELECT id FROM trades WHERE user_id = ? AND broker = ? AND broker_trade_id = ? LIMIT 1',
+          [req.user.id, broker, brokerTradeId]
+        );
+        if (exists) return;
+      }
+
+      const pnl = t.pnl != null
+        ? parseFloat(t.pnl)
+        : ((exitPrice - entryPrice) * quantity * (direction === 'short' ? -1 : 1) - commission);
+      const changes = dbRun(`INSERT OR IGNORE INTO trades (id,user_id,symbol,asset_type,direction,entry_price,exit_price,quantity,entry_date,exit_date,commission,broker,broker_trade_id,strategy,notes,pnl) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [uuidv4(), req.user.id, symbol, t.asset_type || 'stock', direction, entryPrice, exitPrice, quantity, t.entry_date || null, t.exit_date || null, commission, broker, brokerTradeId, t.strategy || null, t.notes || null, parseFloat((isNaN(pnl) ? 0 : pnl).toFixed(8))]);
+      if (changes > 0) imported += 1;
     });
     dbRun("UPDATE broker_connections SET last_sync = datetime('now') WHERE id = ?", [req.params.id]);
-    res.json({ success: true, imported: rawTrades.length, broker: conn.broker_name });
+    res.json({ success: true, imported, broker: conn.broker_name });
   } catch (err) { res.status(500).json({ success: false, error: safeErr(err) }); }
 });
 

@@ -9,9 +9,12 @@ const { dbGet, dbRun } = require('../db/database');
 const { generateToken } = require('../middleware/auth');
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// JWT_SECRET lives in middleware/auth.js — use generateToken() for signing.
+// We import it here only for verifying reset tokens and profile updates.
 const JWT_SECRET = process.env.JWT_SECRET || (() => {
   if (process.env.NODE_ENV === 'production') {
-    console.error('FATAL: JWT_SECRET not set'); process.exit(1);
+    console.error('FATAL: JWT_SECRET not set in production'); process.exit(1);
   }
   return 'dev-only-secret-not-for-production';
 })();
@@ -210,7 +213,11 @@ router.post('/reset-password-request', async (req, res) => {
     res.json({ success: true, message: 'Password reset email sent! Check your inbox (and spam folder).' });
   } catch (err) {
     console.error('Reset email error:', err.message);
-    res.status(500).json({ success: false, error: 'Failed to send reset email: ' + err.message });
+    const isProduction = process.env.NODE_ENV === 'production';
+    res.status(500).json({
+      success: false,
+      error: isProduction ? 'Failed to send reset email. Please try again.' : 'Failed to send reset email: ' + err.message,
+    });
   }
 });
 

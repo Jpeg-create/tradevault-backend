@@ -77,7 +77,10 @@ router.post('/', (req, res) => {
 router.post('/bulk', (req, res) => {
   try {
     const { trades } = req.body;
-    if (!Array.isArray(trades)||!trades.length) return res.status(400).json({ success: false, error: 'trades array required' });
+    if (!Array.isArray(trades) || !trades.length)
+      return res.status(400).json({ success: false, error: 'trades array required' });
+    if (trades.length > 500)
+      return res.status(400).json({ success: false, error: 'Bulk import is limited to 500 trades per request' });
     trades.forEach(t => {
       const pnl = t.pnl!=null ? t.pnl : (parseFloat(t.exit_price)-parseFloat(t.entry_price))*parseFloat(t.quantity)*(t.direction==='short'?-1:1)-parseFloat(t.commission||0);
       dbRun(`INSERT OR IGNORE INTO trades (id,user_id,symbol,asset_type,direction,entry_price,exit_price,quantity,entry_date,exit_date,stop_loss,take_profit,strategy,notes,commission,market_conditions,pnl,broker,broker_trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -91,10 +94,29 @@ router.put('/:id', (req, res) => {
   try {
     const existing = dbGet('SELECT * FROM trades WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
     if (!existing) return res.status(404).json({ success: false, error: 'Trade not found' });
-    const f = { ...existing, ...req.body };
-    const pnl = (parseFloat(f.exit_price)-parseFloat(f.entry_price))*parseFloat(f.quantity)*(f.direction==='short'?-1:1)-parseFloat(f.commission||0);
-    dbRun(`UPDATE trades SET symbol=?,asset_type=?,direction=?,entry_price=?,exit_price=?,quantity=?,entry_date=?,exit_date=?,stop_loss=?,take_profit=?,strategy=?,notes=?,commission=?,market_conditions=?,pnl=? WHERE id=? AND user_id=?`,
-      [f.symbol,f.asset_type,f.direction,f.entry_price,f.exit_price,f.quantity,f.entry_date,f.exit_date,f.stop_loss,f.take_profit,f.strategy,f.notes,f.commission,f.market_conditions,parseFloat(pnl.toFixed(8)),req.params.id,req.user.id]);
+
+    // Whitelist: only allow these fields to be updated — never accept id, user_id, pnl, broker_trade_id from client
+    const ALLOWED_FIELDS = [
+      'symbol', 'asset_type', 'direction', 'entry_price', 'exit_price', 'quantity',
+      'entry_date', 'exit_date', 'stop_loss', 'take_profit', 'strategy', 'notes',
+      'commission', 'market_conditions', 'broker',
+    ];
+    const patch = {};
+    for (const key of ALLOWED_FIELDS) {
+      if (req.body[key] !== undefined) patch[key] = req.body[key];
+    }
+    const f = { ...existing, ...patch };
+
+    if (isNaN(parseFloat(f.entry_price)) || isNaN(parseFloat(f.exit_price)) || isNaN(parseFloat(f.quantity)))
+      return res.status(400).json({ success: false, error: 'Prices and quantity must be valid numbers' });
+    if (parseFloat(f.quantity) <= 0)
+      return res.status(400).json({ success: false, error: 'Quantity must be greater than zero' });
+
+    const pnl = (parseFloat(f.exit_price) - parseFloat(f.entry_price)) * parseFloat(f.quantity) * (f.direction === 'short' ? -1 : 1) - parseFloat(f.commission || 0);
+    dbRun(
+      `UPDATE trades SET symbol=?,asset_type=?,direction=?,entry_price=?,exit_price=?,quantity=?,entry_date=?,exit_date=?,stop_loss=?,take_profit=?,strategy=?,notes=?,commission=?,market_conditions=?,pnl=? WHERE id=? AND user_id=?`,
+      [f.symbol, f.asset_type, f.direction, f.entry_price, f.exit_price, f.quantity, f.entry_date, f.exit_date, f.stop_loss, f.take_profit, f.strategy, f.notes, f.commission, f.market_conditions, parseFloat(pnl.toFixed(8)), req.params.id, req.user.id]
+    );
     res.json({ success: true, data: dbGet('SELECT * FROM trades WHERE id = ?', [req.params.id]) });
   } catch (err) { res.status(500).json({ success: false, error: process.env.NODE_ENV !== 'production' ? err.message : 'Server error' }); }
 });

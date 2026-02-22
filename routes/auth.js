@@ -9,7 +9,19 @@ const { dbGet, dbRun } = require('../db/database');
 const { generateToken } = require('../middleware/auth');
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-const JWT_SECRET   = process.env.JWT_SECRET || 'tradevault-secret-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || (() => {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('FATAL: JWT_SECRET not set'); process.exit(1);
+  }
+  return 'dev-only-secret-not-for-production';
+})();
+
+
+// Sanitize errors for client — never expose internal details in production
+function safeError(err) {
+  if (process.env.NODE_ENV !== 'production') return err.message;
+  return 'An error occurred. Please try again.';
+}
 
 // ── EMAIL SETUP ───────────────────────────────────────────
 // Configure these in Render Environment Variables:
@@ -82,6 +94,13 @@ router.post('/signup', async (req, res) => {
     const { name, email, password } = req.body;
     if (!name || !email || !password)
       return res.status(400).json({ success: false, error: 'Name, email and password are required' });
+    if (name.trim().length > 100)
+      return res.status(400).json({ success: false, error: 'Name must be 100 characters or less' });
+    if (email.length > 254)
+      return res.status(400).json({ success: false, error: 'Email address is too long' });
+    // Basic email format check
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return res.status(400).json({ success: false, error: 'Please enter a valid email address' });
     if (password.length < 6)
       return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
 
@@ -98,7 +117,7 @@ router.post('/signup', async (req, res) => {
     const token = generateToken(user);
     res.status(201).json({ success: true, token, user });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: safeError(err) });
   }
 });
 
@@ -121,7 +140,7 @@ router.post('/login', async (req, res) => {
     const token = generateToken(safeUser);
     res.json({ success: true, token, user: safeUser });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: safeError(err) });
   }
 });
 
@@ -150,7 +169,7 @@ router.post('/google', async (req, res) => {
     const token = generateToken(user);
     res.json({ success: true, token, user });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: safeError(err) });
   }
 });
 
@@ -215,7 +234,7 @@ router.post('/reset-password', async (req, res) => {
     dbRun('UPDATE users SET password = ? WHERE id = ?', [hashed, decoded.id]);
     res.json({ success: true, message: 'Password updated! You can now log in.' });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: safeError(err) });
   }
 });
 
@@ -248,7 +267,7 @@ router.put('/profile', async (req, res) => {
     const newToken = jwt.sign({ id: updated.id, email: updated.email, name: updated.name }, JWT_SECRET, { expiresIn: '30d' });
     res.json({ success: true, user: updated, token: newToken });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: safeError(err) });
   }
 });
 
@@ -277,7 +296,7 @@ router.delete('/account', async (req, res) => {
     dbRun('DELETE FROM users               WHERE id = ?',      [decoded.id]);
     res.json({ success: true, message: 'Account deleted' });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: safeError(err) });
   }
 });
 

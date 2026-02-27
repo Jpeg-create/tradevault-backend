@@ -145,7 +145,7 @@ router.post('/debrief', async (req, res) => {
     const { trade } = req.body;
     if (!trade) return res.status(400).json({ success: false, error: 'trade object required' });
 
-    const allTrades = dbAll('SELECT * FROM trades WHERE user_id = ? ORDER BY created_at DESC', [req.user.id]);
+    const allTrades = await dbAll('SELECT * FROM trades WHERE user_id = ? ORDER BY created_at DESC', [req.user.id]);
     const stats     = buildTradeStats(allTrades);
     const pnl       = Number(trade.pnl);
 
@@ -182,7 +182,7 @@ Please give me a trade debrief. Be specific to my numbers. Keep it to 3–4 sent
 // ── POST /api/ai/patterns ─────────────────────────────────
 router.post('/patterns', async (req, res) => {
   try {
-    const allTrades = dbAll('SELECT * FROM trades WHERE user_id = ? ORDER BY created_at DESC', [req.user.id]);
+    const allTrades = await dbAll('SELECT * FROM trades WHERE user_id = ? ORDER BY created_at DESC', [req.user.id]);
 
     if (allTrades.length < 3) {
       return res.status(400).json({ success: false, error: 'Log at least 3 trades to unlock pattern analysis.' });
@@ -245,7 +245,7 @@ router.post('/journal-draft', async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
 
     // Get today's trades
-    const todayTrades = dbAll(
+    const todayTrades = await dbAll(
       `SELECT * FROM trades WHERE user_id = ? AND date(exit_date) = ? ORDER BY exit_date ASC`,
       [req.user.id, today]
     );

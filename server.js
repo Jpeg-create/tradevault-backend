@@ -29,17 +29,27 @@ app.use((req, res, next) => {
 });
 
 // ── CORS ──────────────────────────────────────────────────
-const allowedOrigins = [
+// ── CORS ──────────────────────────────────────────────────
+const exactAllowedOrigins = [
   process.env.FRONTEND_URL,
   'http://localhost:5500',
   'http://localhost:3000',
+  'http://localhost:3001',
   'http://127.0.0.1:5500',
+  'http://127.0.0.1:3000',
 ].filter(Boolean);
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;  // same-origin / server-to-server
+  if (exactAllowedOrigins.includes(origin)) return true;
+  // Allow any *.vercel.app preview URL (covers all deployment previews)
+  if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin)) return true;
+  return false;
+}
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (isAllowedOrigin(origin)) return callback(null, true);
     callback(new Error(`CORS: origin ${origin} not allowed`));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],

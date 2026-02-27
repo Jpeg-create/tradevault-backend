@@ -1,123 +1,117 @@
-const { Pool } = require('pg');
+const initSqlJs = require('sql.js');
+const path = require('path');
+const fs = require('fs');
 
-// ── CONNECTION POOL ───────────────────────────────────────
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-});
+const dataDir = path.join(__dirname, '..', 'data');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-pool.on('error', (err) => {
-  console.error('[DB] Unexpected pool error:', err.message);
-});
+const dbPath = path.join(dataDir, 'quantario.db');
+let db;
 
-// ── SCHEMA ────────────────────────────────────────────────
-const SCHEMA = `
-  CREATE TABLE IF NOT EXISTS users (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
-    email      TEXT UNIQUE NOT NULL,
-    password   TEXT,
-    google_id  TEXT UNIQUE,
-    avatar     TEXT,
-    plan       TEXT DEFAULT 'free',
-    created_at TEXT DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
-  );
-
-  CREATE TABLE IF NOT EXISTS trades (
-    id                TEXT PRIMARY KEY,
-    user_id           TEXT NOT NULL,
-    symbol            TEXT NOT NULL,
-    asset_type        TEXT NOT NULL DEFAULT 'stock',
-    direction         TEXT NOT NULL DEFAULT 'long',
-    entry_price       REAL NOT NULL,
-    exit_price        REAL NOT NULL,
-    quantity          REAL NOT NULL,
-    entry_date        TEXT,
-    exit_date         TEXT,
-    stop_loss         REAL,
-    take_profit       REAL,
-    strategy          TEXT,
-    notes             TEXT,
-    commission        REAL DEFAULT 0,
-    market_conditions TEXT,
-    pnl               REAL NOT NULL,
-    broker            TEXT DEFAULT 'manual',
-    broker_trade_id   TEXT,
-    created_at        TEXT DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS journal_entries (
-    id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL,
-    entry_date TEXT NOT NULL,
-    content    TEXT NOT NULL,
-    created_at TEXT DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS broker_connections (
-    id          TEXT PRIMARY KEY,
-    user_id     TEXT NOT NULL,
-    broker_name TEXT NOT NULL,
-    api_key     TEXT,
-    api_secret  TEXT,
-    account_id  TEXT,
-    is_active   INTEGER DEFAULT 1,
-    last_sync   TEXT,
-    created_at  TEXT DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS used_reset_tokens (
-    token_hash TEXT PRIMARY KEY,
-    used_at    TEXT DEFAULT (to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
-  );
-`;
-
-// ── INIT ──────────────────────────────────────────────────
 async function initDB() {
-  try {
-    await pool.query(SCHEMA);
-    console.log('✅ Neon database ready');
-  } catch (err) {
-    console.error('❌ Database init failed:', err.message);
-    throw err;
+  const SQL = await initSqlJs();
+  if (fs.existsSync(dbPath)) {
+    db = new SQL.Database(fs.readFileSync(dbPath));
+  } else {
+    db = new SQL.Database();
   }
+
+  db.save = () => {
+    const data = db.export();
+    fs.writeFileSync(dbPath, Buffer.from(data));
+  };
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      email      TEXT UNIQUE NOT NULL,
+      password   TEXT,
+      google_id  TEXT UNIQUE,
+      avatar     TEXT,
+      plan       TEXT DEFAULT 'free',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS trades (
+      id                TEXT PRIMARY KEY,
+      user_id           TEXT NOT NULL,
+      symbol            TEXT NOT NULL,
+      asset_type        TEXT NOT NULL DEFAULT 'stock',
+      direction         TEXT NOT NULL DEFAULT 'long',
+      entry_price       REAL NOT NULL,
+      exit_price        REAL NOT NULL,
+      quantity          REAL NOT NULL,
+      entry_date        TEXT,
+      exit_date         TEXT,
+      stop_loss         REAL,
+      take_profit       REAL,
+      strategy          TEXT,
+      notes             TEXT,
+      commission        REAL DEFAULT 0,
+      market_conditions TEXT,
+      pnl               REAL NOT NULL,
+      broker            TEXT DEFAULT 'manual',
+      broker_trade_id   TEXT,
+      created_at        TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS journal_entries (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL,
+      entry_date TEXT NOT NULL,
+      content    TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS broker_connections (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      broker_name TEXT NOT NULL,
+      api_key     TEXT,
+      api_secret  TEXT,
+      account_id  TEXT,
+      is_active   INTEGER DEFAULT 1,
+      last_sync   TEXT,
+      created_at  TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS used_reset_tokens (
+      token_hash TEXT PRIMARY KEY,
+      used_at    TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.save();
+
+  // Migration: add plan column if it doesn't exist (existing databases)
+  try { db.run(`ALTER TABLE users ADD COLUMN plan TEXT DEFAULT 'free'`); db.save(); } catch {}
+
+  console.log('✅ Database ready:', dbPath);
+  return db;
 }
 
-// ── HELPERS ───────────────────────────────────────────────
-// Convert SQLite-style ? placeholders to PostgreSQL $1 $2 $3...
-function toPostgres(query) {
-  let i = 0;
-  return query.replace(/\?/g, () => `$${++i}`);
+function dbAll(query, params = []) {
+  const stmt = db.prepare(query);
+  stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
 }
 
-function normaliseRow(row) {
-  if (!row) return null;
-  const out = {};
-  for (const [k, v] of Object.entries(row)) {
-    out[k] = v;
-  }
-  return out;
+function dbRun(query, params = []) {
+  db.run(query, params);
+  const rowsModified = typeof db.getRowsModified === 'function' ? db.getRowsModified() : 0;
+  db.save();
+  return rowsModified;
 }
 
-async function dbAll(query, params = []) {
-  const { rows } = await pool.query(toPostgres(query), params);
-  return rows.map(normaliseRow);
-}
-
-async function dbGet(query, params = []) {
-  const rows = await dbAll(query, params);
-  return rows[0] || null;
-}
-
-async function dbRun(query, params = []) {
-  const result = await pool.query(toPostgres(query), params);
-  return result.rowCount || 0;
+function dbGet(query, params = []) {
+  return dbAll(query, params)[0] || null;
 }
 
 module.exports = { initDB, dbAll, dbRun, dbGet };

@@ -126,7 +126,7 @@ router.post('/preview', upload.single('file'), (req, res) => {
 });
 
 // ── POST /confirm ─────────────────────────────────────────
-router.post('/confirm', async (req, res) => {
+router.post('/confirm', (req, res) => {
   try {
     const rawRows  = Array.isArray(req.body.rows) ? req.body.rows : [];
     const validRows = rawRows.filter(r => !r._error).slice(0, MAX_ROWS);
@@ -134,17 +134,16 @@ router.post('/confirm', async (req, res) => {
       return res.status(400).json({ success: false, error: 'No valid rows to import' });
 
     let imported = 0;
-    for (const t of validRows) {
+    validRows.forEach(t => {
       const sym = String(t.symbol || '').toUpperCase().slice(0, 20);
-      if (!sym) continue;
-      const direction  = t.direction || 'long';
+      if (!sym) return;
+      const direction = t.direction || 'long';
       const entryPrice = parseFloat(t.entry_price) || 0;
-      const exitPrice  = parseFloat(t.exit_price) || 0;
-      const quantity   = parseFloat(t.quantity) || 0;
-      const entryDate  = t.entry_date || null;
-      const exitDate   = t.exit_date || null;
-
-      const existing = await dbGet(
+      const exitPrice = parseFloat(t.exit_price) || 0;
+      const quantity = parseFloat(t.quantity) || 0;
+      const entryDate = t.entry_date || null;
+      const exitDate = t.exit_date || null;
+      const existing = dbGet(
         `SELECT id FROM trades
          WHERE user_id = ?
            AND broker = 'csv_import'
@@ -158,21 +157,20 @@ router.post('/confirm', async (req, res) => {
          LIMIT 1`,
         [req.user.id, sym, direction, entryPrice, exitPrice, quantity, entryDate, exitDate]
       );
-      if (existing) continue;
+      if (existing) return;
 
       const pnl = parseFloat(t.pnl) || 0;
-      const changes = await dbRun(
-        `INSERT INTO trades
+      const changes = dbRun(
+        `INSERT OR IGNORE INTO trades
           (id,user_id,symbol,asset_type,direction,entry_price,exit_price,quantity,
            entry_date,exit_date,stop_loss,take_profit,strategy,notes,commission,
            market_conditions,pnl,broker)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT (id) DO NOTHING`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [uuidv4(), req.user.id, sym,
          t.asset_type || 'stock', direction,
          entryPrice, exitPrice, quantity,
          entryDate, exitDate,
-         parseFloat(t.stop_loss)  || null, parseFloat(t.take_profit) || null,
+         parseFloat(t.stop_loss)   || null, parseFloat(t.take_profit) || null,
          t.strategy    ? String(t.strategy).slice(0, 200)  : null,
          t.notes       ? String(t.notes).slice(0, 5000)    : null,
          parseFloat(t.commission) || 0,
@@ -180,7 +178,7 @@ router.post('/confirm', async (req, res) => {
          parseFloat(pnl.toFixed(8)), 'csv_import']
       );
       if (changes > 0) imported += 1;
-    }
+    });
     res.json({ success: true, imported });
   } catch (err) { res.status(500).json({ success: false, error: safeErr(err) }); }
 });

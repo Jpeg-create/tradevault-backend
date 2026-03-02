@@ -97,6 +97,7 @@ async function start() {
   app.use('/api/import',  require('./routes/import'));
   app.use('/api/brokers', require('./routes/brokers'));
   app.use('/api/ai',      require('./routes/ai'));
+  app.use('/api/email',   require('./routes/email'));
 
   app.use(errorHandler);
 
